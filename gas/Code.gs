@@ -204,7 +204,7 @@ function updateUser(app, targetIdm, newName, newGrade, newYomi, newNickname) {
     }
     
     if (!isExist) {
-      let personalUrl = "https://risshi-log-test.netlify.app/?id=" + targetIdm;
+      let personalUrl = "https://okamuro-d.github.io/Risshi-Log/web/index.html?id=" + targetIdm;
       // ★変更：新規作成時は E列にURL、F列にニックネーム を保存
       userSheet.appendRow([targetIdm, newName, newGrade, newYomi || "", personalUrl, newNickname || ""]);
     }
@@ -273,7 +273,7 @@ function toggleStatus(app, targetIdm) {
   }
 
   if (!isExist) {
-    let personalUrl = "https://risshi-log-test.netlify.app/?id=" + targetIdm;
+    let personalUrl = "https://okamuro-d.github.io/Risshi-Log/web/index.html?id=" + targetIdm;
     // ★変更：E列にURL、F列に空のニックネーム枠を作成
     userSheet.appendRow([targetIdm, "", "", "", personalUrl, ""]);
   }
