@@ -7,6 +7,7 @@ import time
 import winsound
 from gspread.exceptions import APIError
 import config
+import ndef
 
 # ==========================================
 # 設定エリア
@@ -71,6 +72,38 @@ def get_yearly_sheet(workbook):
         
     sheet_name = f"{year}年度"
     return get_sheet_safe(workbook, sheet_name, ['IDm', '名前', '日付', '入室時刻', '退出時刻', '滞在時間(分)'])
+
+def write_ndef(connection, url):
+    try:
+        # 1. NDEFメッセージ（URL）を作成
+        record = ndef.UriRecord(url)
+        message_bytes = b"".join(ndef.message_encoder([record]))
+        message = [int(b) for b in message_bytes]
+        
+        # 2. TLV形式にラップ (0x03=NDEF, 長さ, ペイロード, 0xFE=終端)
+        tlv = [0x03, len(message)] + message + [0xFE]
+        
+        # 4バイト単位にパディング
+        while len(tlv) % 4 != 0:
+            tlv.append(0x00)
+        
+        print(f" 🔗 タグへURL書き込み中...")
+        # 3. データの書き込み (Page 4以降)
+        for i in range(0, len(tlv), 4):
+            page = 4 + (i // 4)
+            data = tlv[i:i+4]
+            # APDU送信: [FF, D6, 00, ページ番号, 04, データ(4バイト)]
+            cmd = [0xFF, 0xD6, 0x00, page, 0x04] + data
+            _, sw1, sw2 = connection.transmit(cmd)
+            
+            # ステータスコード 90 00 以外は失敗
+            if sw1 != 0x90 or sw2 != 0x00:
+                print(f" ❌ ページ {page} の書き込みに失敗 (Status: {hex(sw1)} {hex(sw2)})")
+                return False
+        return True
+    except Exception as e:
+        print(f" ⚠️ 書き込みエラー詳細: {e}")
+        return False
 
 # ==========================================
 # 2. モニター用シート更新
@@ -176,22 +209,6 @@ def update_statistics(workbook, idm, name, duration_min, date_str):
         safe_api_call(stats_sheet.append_row, new_row)
         print(f"   📈 統計新規作成: {name}")
 
-def write_ndef(connection, url):
-    try:
-        record = ndef.UriRecord(url)
-        message_bytes = b"".join(ndef.message_encoder([record]))
-        message = [int(b) for b in message_bytes]
-        tlv = [0x03, len(message)] + message + [0xFE]
-        while len(tlv) % 4 != 0: tlv.append(0x00)
-        for i in range(0, len(tlv), 4):
-            page = 4 + (i // 4)
-            data = tlv[i:i+4]
-            cmd = [0xFF, 0xD6, 0x00, page, 0x04] + data
-            connection.transmit(cmd)
-        return True
-    except:
-        return False
-
 # ==========================================
 # 4. 入退室処理（毎回確認版）
 # ==========================================
@@ -214,23 +231,34 @@ def handle_tap(idm, workbook, connection):
     # --- 初回登録 & URL書き込みフロー ---
     if is_new_user:
         print(f"🆕 初回登録検出: {safe_idm}")
-        # タグへのURL書き込み
-        if write_ndef(connection, personal_url):
-            print("✅ タグへのURL書き込み成功")
         
-        # 名簿登録
-        safe_api_call(user_sheet.append_row, [safe_idm, '', '', '', personal_url])
-        
-        # モニター通知（特殊フォーマット）
-        now = datetime.now()
-        date_str, time_str = now.strftime('%Y-%m-%d'), now.strftime('%H:%M:%S')
-        status_msg = f"登録完了|{safe_idm}|{personal_url}"
-        update_monitor_sheet(workbook, "新規登録者", status_msg, date_str, time_str)
-        
-        winsound.Beep(2500, 100)
-        winsound.Beep(2500, 100)
-        return # 入室処理はせず終了
+        # ★重要修正：API待ちで切れた接続を「再接続」して叩き起こす
+        try:
+            connection.connect() 
+        except:
+            pass 
 
+        # 1. 物理タグへのURL書き込みを優先実行
+        if write_ndef(connection, personal_url):
+            print(" ✅ タグへのURL書き込み成功")
+            
+            # 2. 書き込み成功時のみ、スプレッドシート名簿へ登録
+            safe_api_call(user_sheet.append_row, [safe_idm, '', '', '', personal_url])
+            
+            # 3. モニターへの通知
+            now = datetime.now()
+            date_str, time_str = now.strftime('%Y-%m-%d'), now.strftime('%H:%M:%S')
+            status_msg = f"登録完了|{safe_idm}|{personal_url}"
+            update_monitor_sheet(workbook, "新規登録者", status_msg, date_str, time_str)
+            
+            winsound.Beep(2500, 150)
+            winsound.Beep(2500, 150)
+            print(" ✨ 新規ユーザーのセットアップが完了しました。")
+        else:
+            print(" ❌ タグへの書き込みに失敗したため、名簿登録を中断しました。")
+            winsound.Beep(500, 500)
+        return
+    
     # --- 通常の入退室記録 ---
     sheet = get_yearly_sheet(workbook)
     now = datetime.now()
@@ -254,46 +282,61 @@ def handle_tap(idm, workbook, connection):
         duration_min = round((now - last_entry_time).total_seconds() / 60, 1)
         safe_api_call(sheet.update_cell, target_row_index, 5, time_str)
         safe_api_call(sheet.update_cell, target_row_index, 6, duration_min)
+        
+        # 統計の更新
+        # update_statistics(workbook, safe_idm, user_name, duration_min, date_str)
+        
         print(f"👋 【退出】 {user_name}")
         update_monitor_sheet(workbook, user_name, "退出", date_str, time_str)
+        winsound.Beep(1500, 200)
     else:
         safe_api_call(sheet.append_row, [safe_idm, user_name, date_str, time_str, "", ""])
         print(f"🔔 【入室】 {user_name}")
         update_monitor_sheet(workbook, user_name, "入室", date_str, time_str)
-
+        winsound.Beep(2000, 200)
 
 def main():
-    print("システム起動中...")
+    print("========================================")
+    print("   RisshiLog 統合管理システム (Native PCSC)")
+    print("========================================")
+    
     try:
         workbook = get_workbook()
-        print("✅ スプレッドシート接続OK")
+        print(" ✅ スプレッドシート接続OK")
     except Exception as e:
-        print(f"❌ 接続エラー: {e}")
+        print(f" ❌ 接続エラー: {e}")
         return
 
     r = readers()
     if not r:
-        print("❌ エラー: リーダーが見つかりません。")
+        print(" ❌ エラー: リーダーが見つかりません。")
         return
 
-    print("💳 カードリーダー待機中...")
-    connection = r[0].createConnection()
+    print(" 💳 カードリーダー待機中...")
+    reader = r[0]
+    connection = reader.createConnection()
     holding_card_id = None
     
     while True:
         try:
             connection.connect()
+            # IDm取得
             data, sw1, sw2 = connection.transmit([0xFF, 0xCA, 0x00, 0x00, 0x00])
             raw_idm = toHexString(data).replace(" ", "")
             
             if raw_idm != holding_card_id:
-                winsound.Beep(2000, 200)
-                handle_tap(raw_idm, workbook, connection) # connectionを渡す
+                # カードを検知したら処理開始
+                handle_tap(raw_idm, workbook, connection)
                 holding_card_id = raw_idm
-            time.sleep(1.5)
+            
+            # 処理が終わったら一度切断してカード離脱を待つ
+            connection.disconnect()
+            time.sleep(1.0)
+            
         except Exception:
+            # カードが離れたらIDをリセット
             holding_card_id = None
-        time.sleep(0.5)
+            time.sleep(0.5)
 
 if __name__ == '__main__':
     main()
