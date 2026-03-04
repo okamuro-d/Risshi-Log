@@ -176,87 +176,91 @@ def update_statistics(workbook, idm, name, duration_min, date_str):
         safe_api_call(stats_sheet.append_row, new_row)
         print(f"   📈 統計新規作成: {name}")
 
+def write_ndef(connection, url):
+    try:
+        record = ndef.UriRecord(url)
+        message_bytes = b"".join(ndef.message_encoder([record]))
+        message = [int(b) for b in message_bytes]
+        tlv = [0x03, len(message)] + message + [0xFE]
+        while len(tlv) % 4 != 0: tlv.append(0x00)
+        for i in range(0, len(tlv), 4):
+            page = 4 + (i // 4)
+            data = tlv[i:i+4]
+            cmd = [0xFF, 0xD6, 0x00, page, 0x04] + data
+            connection.transmit(cmd)
+        return True
+    except:
+        return False
+
 # ==========================================
 # 4. 入退室処理（毎回確認版）
 # ==========================================
-def handle_tap(idm, workbook):
+def handle_tap(idm, workbook, connection):
     safe_idm = normalize_id(idm)
-    
     user_name = "未登録(新規)"
     personal_url = STUDENT_URL_BASE + safe_idm
     is_new_user = True
     
-    # ★変更: タッチされるたびに必ずスプレッドシートを見に行く
     user_sheet = get_sheet_safe(workbook, USER_SHEET_NAME, ['IDm', '名前', '学年', 'ふりがな', '生徒用URL'])
     if user_sheet:
         user_rows = safe_api_call(user_sheet.get_all_values)
-        if user_rows:
-            if len(user_rows) > 1:
-                for i in range(1, len(user_rows)):
-                    row = user_rows[i]
-                    if len(row) > 0 and normalize_id(row[0]) == safe_idm:
-                        user_name = row[1] if row[1] else "未登録"
-                        is_new_user = False # 名簿に存在した
-                        
-                        # URLが空欄なら追記
-                        if len(row) < 5 or row[4] == "":
-                            safe_api_call(user_sheet.update_cell, i+1, 5, personal_url)
-                        break
+        if user_rows and len(user_rows) > 1:
+            for i in range(1, len(user_rows)):
+                if normalize_id(user_rows[i][0]) == safe_idm:
+                    user_name = user_rows[i][1] if user_rows[i][1] else "未登録"
+                    is_new_user = False
+                    break
 
-    # 名簿に無ければ（消されていれば）新規登録をやり直す
+    # --- 初回登録 & URL書き込みフロー ---
     if is_new_user:
-        if user_sheet:
-            print(f"🆕 名簿に無いIDを検出（新規登録します）: {safe_idm}")
-            safe_api_call(user_sheet.append_row, [safe_idm, '', '', '', personal_url])
-            user_name = "未登録(新規)"
+        print(f"🆕 初回登録検出: {safe_idm}")
+        # タグへのURL書き込み
+        if write_ndef(connection, personal_url):
+            print("✅ タグへのURL書き込み成功")
+        
+        # 名簿登録
+        safe_api_call(user_sheet.append_row, [safe_idm, '', '', '', personal_url])
+        
+        # モニター通知（特殊フォーマット）
+        now = datetime.now()
+        date_str, time_str = now.strftime('%Y-%m-%d'), now.strftime('%H:%M:%S')
+        status_msg = f"登録完了|{safe_idm}|{personal_url}"
+        update_monitor_sheet(workbook, "新規登録者", status_msg, date_str, time_str)
+        
+        winsound.Beep(2500, 100)
+        winsound.Beep(2500, 100)
+        return # 入室処理はせず終了
 
-    # --- 2. 入退室記録 ---
+    # --- 通常の入退室記録 ---
     sheet = get_yearly_sheet(workbook)
-    if not sheet: return
-
     now = datetime.now()
-    date_str = now.strftime('%Y-%m-%d')
-    time_str = now.strftime('%H:%M:%S')
-    
-    print(f"処理中... {user_name} (ID: {safe_idm})")
+    date_str, time_str = now.strftime('%Y-%m-%d'), now.strftime('%H:%M:%S')
     
     monthly_rows = safe_api_call(sheet.get_all_values)
-    if not monthly_rows: return
-
     target_row_index = -1
     last_entry_time = None
     
-    if len(monthly_rows) > 1:
+    if monthly_rows and len(monthly_rows) > 1:
         for i in range(len(monthly_rows) - 1, 0, -1):
             row = monthly_rows[i]
             if len(row) > 0 and normalize_id(row[0]) == safe_idm:
-                exit_time = ""
-                if len(row) > 4: exit_time = row[4].strip()
-                if exit_time == "":
+                if len(row) < 5 or row[4].strip() == "":
                     target_row_index = i + 1
-                    entry_str = f"{row[2]} {row[3]}"
-                    try: last_entry_time = datetime.strptime(entry_str, '%Y-%m-%d %H:%M:%S')
+                    try: last_entry_time = datetime.strptime(f"{row[2]} {row[3]}", '%Y-%m-%d %H:%M:%S')
                     except: target_row_index = -1
                 break
     
     if target_row_index != -1 and last_entry_time:
-        # --- 退出 ---
-        duration_min = (now - last_entry_time).total_seconds() / 60
+        duration_min = round((now - last_entry_time).total_seconds() / 60, 1)
         safe_api_call(sheet.update_cell, target_row_index, 5, time_str)
-        safe_api_call(sheet.update_cell, target_row_index, 6, round(duration_min, 1))
-        
-        print(f"👋 【退出】 {user_name} ({round(duration_min, 1)}分)")
-        
-        update_statistics(workbook, safe_idm, user_name, duration_min, date_str)
+        safe_api_call(sheet.update_cell, target_row_index, 6, duration_min)
+        print(f"👋 【退出】 {user_name}")
         update_monitor_sheet(workbook, user_name, "退出", date_str, time_str)
-        
     else:
-        # --- 入室 ---
-        new_row = [safe_idm, user_name, date_str, time_str, "", ""]
-        safe_api_call(sheet.append_row, new_row)
+        safe_api_call(sheet.append_row, [safe_idm, user_name, date_str, time_str, "", ""])
         print(f"🔔 【入室】 {user_name}")
-        
         update_monitor_sheet(workbook, user_name, "入室", date_str, time_str)
+
 
 def main():
     print("システム起動中...")
@@ -272,7 +276,7 @@ def main():
         print("❌ エラー: リーダーが見つかりません。")
         return
 
-    print("💳 カードリーダー待機中... (Ctrl+Cで終了)")
+    print("💳 カードリーダー待機中...")
     connection = r[0].createConnection()
     holding_card_id = None
     
@@ -282,19 +286,13 @@ def main():
             data, sw1, sw2 = connection.transmit([0xFF, 0xCA, 0x00, 0x00, 0x00])
             raw_idm = toHexString(data).replace(" ", "")
             
-            if raw_idm == holding_card_id:
-                time.sleep(0.5)
-                continue
-            
-            winsound.Beep(2000, 200)
-            handle_tap(raw_idm, workbook)
-            holding_card_id = raw_idm
-            
+            if raw_idm != holding_card_id:
+                winsound.Beep(2000, 200)
+                handle_tap(raw_idm, workbook, connection) # connectionを渡す
+                holding_card_id = raw_idm
             time.sleep(1.5)
-                
         except Exception:
             holding_card_id = None
-        
         time.sleep(0.5)
 
 if __name__ == '__main__':
