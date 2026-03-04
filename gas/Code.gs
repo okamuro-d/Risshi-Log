@@ -29,6 +29,40 @@ function doGet(e) {
   // doGetの分岐(mode判定)の中に以下を追加
   if (mode === 'get_history') return getUserHistory(app, e.parameter.idm);
   if (mode === 'update_history') return updateHistoryRow(app, e.parameter.row, e.parameter.entry, e.parameter.exit);
+  if (mode === "delete_user") {
+    const idm = e.parameter.idm;
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    
+    // 1. 名簿から削除
+    const userSheet = ss.getSheetByName("名簿");
+    const userRows = userSheet.getDataRange().getValues();
+    for (let i = userRows.length - 1; i >= 1; i--) {
+      if (userRows[i][0] == idm) { userSheet.deleteRow(i + 1); }
+    }
+
+    // 2. 統計から削除
+    const statsSheet = ss.getSheetByName("統計");
+    if (statsSheet) {
+      const statsRows = statsSheet.getDataRange().getValues();
+      for (let i = statsRows.length - 1; i >= 1; i--) {
+        if (statsRows[i][0] == idm) { statsSheet.deleteRow(i + 1); }
+      }
+    }
+
+    // 3. 各年度の履歴シートから削除
+    const sheets = ss.getSheets();
+    sheets.forEach(sheet => {
+      if (sheet.getName().includes("年度")) {
+        const rows = sheet.getDataRange().getValues();
+        for (let i = rows.length - 1; i >= 1; i--) {
+          if (rows[i][0] == idm) { sheet.deleteRow(i + 1); }
+        }
+      }
+    });
+
+    return ContentService.createTextOutput(JSON.stringify({status: "success", message: "削除完了"})).setMimeType(ContentService.MimeType.JSON);
+  }
+
 
   /**
    * 指定したユーザーの直近3回分の履歴を取得する
