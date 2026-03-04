@@ -25,7 +25,6 @@ function doGet(e) {
   
   if (mode === 'delete_user') return deleteUser(app, e.parameter.idm);
   if (mode === 'force_exit_all') return processForceExitAll(app, null); 
-  if (mode === 'submit_feedback') return submitFeedback(app, e.parameter.idm, e.parameter.name, e.parameter.message);
 
   // doGetの分岐(mode判定)の中に以下を追加
   if (mode === 'get_history') return getUserHistory(app, e.parameter.idm);
@@ -365,16 +364,6 @@ function processForceExitAll(app, forcedTimeStr = null) {
 // =========================================
 // その他の関数・ヘルパー
 // =========================================
-function submitFeedback(app, idm, name, message) {
-  let sheet = app.getSheetByName(FEEDBACK_SHEET_NAME);
-  if (!sheet) {
-    sheet = app.insertSheet(FEEDBACK_SHEET_NAME);
-    sheet.appendRow(['日時', 'IDm', '名前', '意見・要望']);
-  }
-  let now = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd HH:mm:ss');
-  sheet.appendRow([now, idm || "不明", name || "匿名", message]);
-  return responseJSON({ success: true });
-}
 
 function getYearlySheet(app) {
   let now = new Date();
