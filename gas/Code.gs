@@ -1,17 +1,11 @@
-// =========================================
-// 基本設定
-// =========================================
 // 【重要】塾のアカウントに移行したらここを書き換える
 const SHEET_ID = '1eYvBli5lOdl991ZSkinb3Bvhrrw3KqGeQLzfedHyITY'; 
 
 const STATS_SHEET_NAME = '統計'; 
 const MONITOR_SHEET_NAME = 'モニター';
 const USER_SHEET_NAME = '名簿';
-const FEEDBACK_SHEET_NAME = '意見箱';
 
-// =========================================
-// メインの受信処理（doGet）
-// =========================================
+//メイン関数
 function doGet(e) {
   let app = SpreadsheetApp.openById(SHEET_ID);
   let mode = e.parameter.mode;
@@ -19,155 +13,31 @@ function doGet(e) {
   if (mode === 'latest') return getLatestLog(app);
   if (mode === 'get_all_status') return getAllStatus(app);
   if (mode === 'toggle_status') return toggleStatus(app, e.parameter.idm);
-  
-  // ★変更：nickname パラメーターを受け取って updateUser に渡す
-  if (mode === 'update_user') return updateUser(app, e.parameter.idm, e.parameter.name, e.parameter.grade, e.parameter.yomi, e.parameter.nickname);
-  
-  if (mode === 'delete_user') return deleteUser(app, e.parameter.idm);
   if (mode === 'force_exit_all') return processForceExitAll(app, null); 
-
-  // doGetの分岐(mode判定)の中に以下を追加
+  if (mode === 'update_user') return updateUser(app, e.parameter.idm, e.parameter.name, e.parameter.grade, e.parameter.yomi, e.parameter.nickname);
+  if (mode === 'delete_user') return deleteUser(app, e.parameter.idm);
   if (mode === 'get_history') return getUserHistory(app, e.parameter.idm);
   if (mode === 'update_history') return updateHistoryRow(app, e.parameter.row, e.parameter.entry, e.parameter.exit);
-  if (mode === "delete_user") {
-    const idm = e.parameter.idm;
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    
-    // 1. 名簿から削除
-    const userSheet = ss.getSheetByName("名簿");
-    const userRows = userSheet.getDataRange().getValues();
-    for (let i = userRows.length - 1; i >= 1; i--) {
-      if (userRows[i][0] == idm) { userSheet.deleteRow(i + 1); }
-    }
-
-    // 2. 統計から削除
-    const statsSheet = ss.getSheetByName("統計");
-    if (statsSheet) {
-      const statsRows = statsSheet.getDataRange().getValues();
-      for (let i = statsRows.length - 1; i >= 1; i--) {
-        if (statsRows[i][0] == idm) { statsSheet.deleteRow(i + 1); }
-      }
-    }
-
-    // 3. 各年度の履歴シートから削除
-    const sheets = ss.getSheets();
-    sheets.forEach(sheet => {
-      if (sheet.getName().includes("年度")) {
-        const rows = sheet.getDataRange().getValues();
-        for (let i = rows.length - 1; i >= 1; i--) {
-          if (rows[i][0] == idm) { sheet.deleteRow(i + 1); }
-        }
-      }
-    });
-
-    return ContentService.createTextOutput(JSON.stringify({status: "success", message: "削除完了"})).setMimeType(ContentService.MimeType.JSON);
-  }
-
-
-  /**
-   * 指定したユーザーの直近3回分の履歴を取得する
-   */
-  function getUserHistory(app, idm) {
-    let sheet = getYearlySheet(app);
-    let data = sheet.getDataRange().getValues();
-    let history = [];
-    
-    // 最新（下）から探索して最大3件取得
-    for (let i = data.length - 1; i >= 1; i--) {
-      if (String(data[i][0]).trim() === idm) {
-        history.push({
-          row: i + 1,
-          date: formatDate(data[i][2]),
-          entry: formatTime(data[i][3]),
-          exit: formatTime(data[i][4])
-        });
-        if (history.length >= 3) break;
-      }
-    }
-    return responseJSON(history);
-  }
-
-  /**
-   * 履歴の時間を更新し、滞在時間を再計算する
-   */
-  function updateHistoryRow(app, row, entry, exit) {
-    let sheet = getYearlySheet(app);
-    let rowNum = parseInt(row);
-    
-    sheet.getRange(rowNum, 4).setValue(entry); // 入室
-    sheet.getRange(rowNum, 5).setValue(exit);  // 退出
-    
-    // 滞在時間の再計算
-    if (entry && exit) {
-      let dateStr = formatDate(sheet.getRange(rowNum, 3).getValue());
-      let t1 = new Date(dateStr + " " + entry);
-      let t2 = new Date(dateStr + " " + exit);
-      if (!isNaN(t1) && !isNaN(t2)) {
-        let diff = Math.round((t2 - t1) / (1000 * 60) * 10) / 10;
-        sheet.getRange(rowNum, 6).setValue(diff > 0 ? diff : 0);
-      }
-    }
-    
-    syncStatsData(app); // 統計を即座に同期
-    return responseJSON({ success: true });
-  }
 
   let idm = e.parameter.id;
   if (idm) {
-    // ★変更：初期値に nickname を追加
-    let result = { found: false, name: "", yomi: "", nickname: "", grade: "未設定", totalDays: 0, totalTime: 0, lastDate: "-", monthlyDays: 0, monthlyTime: 0 };
-    
-    // 1. 名簿から基本情報を取得
-    let userSheet = getUserSheet(app);
-    if (userSheet) {
-      let users = userSheet.getDataRange().getValues();
-      for (let i = 1; i < users.length; i++) {
-        if (String(users[i][0]).trim() === idm) {
-          result.found = true;
-          result.name = String(users[i][1] || "");
-          let gradeVal = String(users[i][2] || "").trim();
-          result.grade = gradeVal !== "" ? gradeVal : "未設定";
-          result.yomi = String(users[i][3] || "").trim();
-          
-          // ★追加：F列（インデックス5）からニックネームを読み取る
-          result.nickname = String(users[i][5] || "").trim();
-          break; 
-        }
-      }
-    }
-
-    // 2. 統計シートからデータを取得
-    let statsSheet = getStatsSheet(app);
-    if (statsSheet) {
-      let stats = statsSheet.getDataRange().getValues();
-      
-      let nowMonth = new Date().getMonth() + 1;
-      let offset = nowMonth >= 4 ? nowMonth - 4 : nowMonth + 8;
-      let daysColIndex = 5 + offset * 2; 
-      let timeColIndex = 6 + offset * 2; 
-
-      for (let i = 1; i < stats.length; i++) {
-        if (String(stats[i][0]).trim() === idm) {
-          result.found = true;
-          result.totalDays = stats[i][2] || 0;
-          result.totalTime = stats[i][3] || 0;
-          result.lastDate = formatDate(stats[i][4]);
-          
-          result.monthlyDays = stats[i][daysColIndex] || 0;
-          result.monthlyTime = stats[i][timeColIndex] || 0;
-          break; 
-        }
-      }
-    }
-    
-    return responseJSON(result);
+    return getStudentMyPageData(app, idm);
   }
+
   return responseJSON({ found: false });
 }
 
-// =========================================
-// ダッシュボード用：全員の状況を取得
-// =========================================
+//メインの処理**************************************************
+
+//最新のログを取得(モニターシートの一番下を返す)
+function getLatestLog(app) {
+  let sheet = app.getSheetByName(MONITOR_SHEET_NAME);
+  if (!sheet || sheet.getLastRow() < 2) return responseJSON({ empty: true });
+  let rowData = sheet.getRange(sheet.getLastRow(), 1, 1, 4).getValues()[0];
+  return responseJSON({ name: rowData[0], status: rowData[1], date: formatDate(rowData[2]), time: formatTime(rowData[3]) });
+}
+
+//ステータスの取得(退室が空欄の人を入室と判断しリストを返す)
 function getAllStatus(app) {
   let userSheet = getUserSheet(app);
   let monthlySheet = getYearlySheet(app);
@@ -209,85 +79,7 @@ function getAllStatus(app) {
   return responseJSON(resultList);
 }
 
-// =========================================
-// ダッシュボード・マイページ用：ユーザー情報の変更
-// =========================================
-// ★変更：引数に newNickname を追加
-function updateUser(app, targetIdm, newName, newGrade, newYomi, newNickname) {
-  targetIdm = String(targetIdm).trim();
-  
-  // 1. 名簿シートの更新
-  let userSheet = getUserSheet(app);
-  if (userSheet) {
-    let isExist = false;
-    let users = userSheet.getDataRange().getValues();
-    for (let i = 1; i < users.length; i++) {
-      if (String(users[i][0]).trim() === targetIdm) {
-        userSheet.getRange(i + 1, 2).setValue(newName);
-        userSheet.getRange(i + 1, 3).setValue(newGrade);
-        if (newYomi !== undefined) {
-          userSheet.getRange(i + 1, 4).setValue(newYomi);
-        }
-        // ★追加：ニックネームをF列（6列目）に書き込む
-        if (newNickname !== undefined) {
-          userSheet.getRange(i + 1, 6).setValue(newNickname);
-        }
-        isExist = true;
-        break; 
-      }
-    }
-    
-    if (!isExist) {
-      let personalUrl = "https://okamuro-d.github.io/Risshi-Log/web/index.html?id=" + targetIdm;
-      // ★変更：新規作成時は E列にURL、F列にニックネーム を保存
-      userSheet.appendRow([targetIdm, newName, newGrade, newYomi || "", personalUrl, newNickname || ""]);
-    }
-  }
-
-  // 2. 統計シートの更新
-  let statsSheet = getStatsSheet(app);
-  if (statsSheet) {
-    let stats = statsSheet.getDataRange().getValues();
-    for (let i = 1; i < stats.length; i++) {
-      if (String(stats[i][0]).trim() === targetIdm) {
-        statsSheet.getRange(i + 1, 2).setValue(newName);
-        break; 
-      }
-    }
-  }
-
-  // 3. 意見箱シートの更新
-  let feedbackSheet = app.getSheetByName(FEEDBACK_SHEET_NAME);
-  if (feedbackSheet) {
-    let feedbacks = feedbackSheet.getDataRange().getValues();
-    for (let i = 1; i < feedbacks.length; i++) {
-      if (String(feedbacks[i][1]).trim() === targetIdm) {
-        feedbackSheet.getRange(i + 1, 3).setValue(newName);
-      }
-    }
-  }
-
-  // 4. すべてのログシートの更新
-  let sheets = app.getSheets();
-  for (let s = 0; s < sheets.length; s++) {
-    let sheet = sheets[s];
-    let sheetName = sheet.getName();
-    if (/^\d{4}年度$/.test(sheetName) || /^\d{4}-\d{2}$/.test(sheetName)) {
-      let logs = sheet.getDataRange().getValues();
-      for (let i = 1; i < logs.length; i++) {
-        if (String(logs[i][0]).trim() === targetIdm) {
-          sheet.getRange(i + 1, 2).setValue(newName);
-        }
-      }
-    }
-  }
-
-  return responseJSON({ success: true });
-}
-
-// =========================================
-// 手動での入退室切り替え処理
-// =========================================
+//手動での入退室切り替え処理
 function toggleStatus(app, targetIdm) {
   targetIdm = String(targetIdm).trim();
   let userSheet = getUserSheet(app);
@@ -308,7 +100,6 @@ function toggleStatus(app, targetIdm) {
 
   if (!isExist) {
     let personalUrl = "https://okamuro-d.github.io/Risshi-Log/web/index.html?id=" + targetIdm;
-    // ★変更：E列にURL、F列に空のニックネーム枠を作成
     userSheet.appendRow([targetIdm, "", "", "", personalUrl, ""]);
   }
 
@@ -351,9 +142,7 @@ function toggleStatus(app, targetIdm) {
   }
 }
 
-// =========================================
-// 一括退室処理
-// =========================================
+//一括退室処理
 function processForceExitAll(app, forcedTimeStr = null) {
   let monthlySheet = getYearlySheet(app);
   let monitorSheet = app.getSheetByName(MONITOR_SHEET_NAME);
@@ -395,73 +184,64 @@ function processForceExitAll(app, forcedTimeStr = null) {
   return responseJSON({ success: true, count: count });
 }
 
-// =========================================
-// その他の関数・ヘルパー
-// =========================================
-
-function getYearlySheet(app) {
-  let now = new Date();
-  let year = now.getFullYear();
-  let month = now.getMonth() + 1; 
-  if (month <= 3) year -= 1;
+//ユーザー情報の更新
+function updateUser(app, targetIdm, newName, newGrade, newYomi, newNickname) {
+  targetIdm = String(targetIdm).trim();
   
-  let sheetName = year + "年度";
-  let sheet = app.getSheetByName(sheetName);
-  if (!sheet) {
-    sheet = app.insertSheet(sheetName);
-    sheet.appendRow(['IDm', '名前', '日付', '入室時刻', '退出時刻', '滞在時間(分)']);
+  let userSheet = getUserSheet(app);
+  if (userSheet) {
+    let isExist = false;
+    let users = userSheet.getDataRange().getValues();
+    for (let i = 1; i < users.length; i++) {
+      if (String(users[i][0]).trim() === targetIdm) {
+        userSheet.getRange(i + 1, 2).setValue(newName);
+        userSheet.getRange(i + 1, 3).setValue(newGrade);
+        if (newYomi !== undefined) {
+          userSheet.getRange(i + 1, 4).setValue(newYomi);
+        }
+        if (newNickname !== undefined) {
+          userSheet.getRange(i + 1, 6).setValue(newNickname);
+        }
+        isExist = true;
+        break; 
+      }
+    }
+    
+    if (!isExist) {
+      let personalUrl = "https://okamuro-d.github.io/Risshi-Log/web/index.html?id=" + targetIdm;
+      userSheet.appendRow([targetIdm, newName, newGrade, newYomi || "", personalUrl, newNickname || ""]);
+    }
   }
-  return sheet;
-}
 
-function getStatsSheet(app) {
-  let sheet = app.getSheetByName(STATS_SHEET_NAME);
-  if (!sheet) {
-    sheet = app.insertSheet(STATS_SHEET_NAME);
-    sheet.appendRow([
-      'IDm', '名前', '累計入室日数', '累計時間(分)', '最終入室日',
-      '4月日数', '4月時間', '5月日数', '5月時間', '6月日数', '6月時間',
-      '7月日数', '7月時間', '8月日数', '8月時間', '9月日数', '9月時間',
-      '10月日数', '10月時間', '11月日数', '11月時間', '12月日数', '12月時間',
-      '1月日数', '1月時間', '2月日数', '2月時間', '3月日数', '3月時間'
-    ]);
+  let statsSheet = getStatsSheet(app);
+  if (statsSheet) {
+    let stats = statsSheet.getDataRange().getValues();
+    for (let i = 1; i < stats.length; i++) {
+      if (String(stats[i][0]).trim() === targetIdm) {
+        statsSheet.getRange(i + 1, 2).setValue(newName);
+        break; 
+      }
+    }
   }
-  return sheet;
-}
 
-function getUserSheet(app) {
-  let sheet = app.getSheetByName(USER_SHEET_NAME);
-  if (!sheet) {
-    sheet = app.insertSheet(USER_SHEET_NAME);
-    sheet.appendRow(['IDm', '名前', '学年', 'ふりがな', '生徒用URL', 'ニックネーム']);
+  let sheets = app.getSheets();
+  for (let s = 0; s < sheets.length; s++) {
+    let sheet = sheets[s];
+    let sheetName = sheet.getName();
+    if (/^\d{4}年度$/.test(sheetName) || /^\d{4}-\d{2}$/.test(sheetName)) {
+      let logs = sheet.getDataRange().getValues();
+      for (let i = 1; i < logs.length; i++) {
+        if (String(logs[i][0]).trim() === targetIdm) {
+          sheet.getRange(i + 1, 2).setValue(newName);
+        }
+      }
+    }
   }
-  return sheet;
+
+  return responseJSON({ success: true });
 }
 
-function getLatestLog(app) {
-  let sheet = app.getSheetByName(MONITOR_SHEET_NAME);
-  if (!sheet || sheet.getLastRow() < 2) return responseJSON({ empty: true });
-  let rowData = sheet.getRange(sheet.getLastRow(), 1, 1, 4).getValues()[0];
-  return responseJSON({ name: rowData[0], status: rowData[1], date: formatDate(rowData[2]), time: formatTime(rowData[3]) });
-}
-
-function responseJSON(data) {
-  let output = ContentService.createTextOutput(JSON.stringify(data));
-  output.setMimeType(ContentService.MimeType.JSON);
-  return output;
-}
-
-function formatDate(date) {
-  if (!date) return "-";
-  try { return Utilities.formatDate(new Date(date), 'Asia/Tokyo', 'yyyy-MM-dd'); } catch (e) { return date; }
-}
-
-function formatTime(timeVal) {
-  if (!timeVal) return "";
-  if (timeVal instanceof Date) return Utilities.formatDate(timeVal, 'Asia/Tokyo', 'HH:mm:ss');
-  return String(timeVal).split('.')[0]; 
-}
-
+//ユーザー情報の削除
 function deleteUser(app, targetIdm) {
   targetIdm = String(targetIdm).trim();
   
@@ -481,14 +261,6 @@ function deleteUser(app, targetIdm) {
     }
   }
 
-  let feedbackSheet = app.getSheetByName(FEEDBACK_SHEET_NAME);
-  if (feedbackSheet) {
-    let feedbacks = feedbackSheet.getDataRange().getValues();
-    for (let i = feedbacks.length - 1; i >= 1; i--) {
-      if (String(feedbacks[i][1]).trim() === targetIdm) feedbackSheet.deleteRow(i + 1);
-    }
-  }
-
   let sheets = app.getSheets();
   for (let s = 0; s < sheets.length; s++) {
     let sheet = sheets[s];
@@ -503,66 +275,157 @@ function deleteUser(app, targetIdm) {
   return responseJSON({ success: true });
 }
 
-// =========================================
-// 【退室時用】対象者1名の「今月」のデータのみを高速更新
-// =========================================
-function updateSingleUserStats(app, targetIdm, durationMin, dateStr) {
-  let now = new Date();
-  let currentMonth = now.getMonth() + 1;
-  let currentYear = currentMonth <= 3 ? now.getFullYear() - 1 : now.getFullYear();
+//最新最大3件分の履歴を取得
+function getUserHistory(app, idm) {
+  let sheet = getYearlySheet(app);
+  let data = sheet.getDataRange().getValues();
+  let history = [];
+    
+  for (let i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]).trim() === idm) {
+      history.push({
+        row: i + 1,
+        date: formatDate(data[i][2]),
+        entry: formatTime(data[i][3]),
+        exit: formatTime(data[i][4])
+      });
+      if (history.length >= 3) break;
+    }
+  }
+  return responseJSON(history);
+}
 
-  let yearlySheet = app.getSheetByName(currentYear + "年度");
-  let statsSheet = getStatsSheet(app);
-  if (!yearlySheet || !statsSheet) return;
+//入退室履歴の編集
+function updateHistoryRow(app, row, entry, exit) {
+  let sheet = getYearlySheet(app);
+  let rowNum = parseInt(row);
+    
+  sheet.getRange(rowNum, 4).setValue(entry); // 入室
+  sheet.getRange(rowNum, 5).setValue(exit);  // 退出
+    
+  if (entry && exit) {
+    let dateStr = formatDate(sheet.getRange(rowNum, 3).getValue());
+    let t1 = new Date(dateStr + " " + entry);
+    let t2 = new Date(dateStr + " " + exit);
+    if (!isNaN(t1) && !isNaN(t2)) {
+      let diff = Math.round((t2 - t1) / (1000 * 60) * 10) / 10;
+      sheet.getRange(rowNum, 6).setValue(diff > 0 ? diff : 0);
+    }
+  }
+    
+  syncStatsData(app); // 統計を即座に同期
+  return responseJSON({ success: true });
+}
 
-  let logs = yearlySheet.getDataRange().getValues();
-  let monthlyDaysSet = new Set();
-  let monthlyTime = 0;
+//マイページ用データの取得
+function getStudentMyPageData(app, idm) {
+  let result = {found: false, name: "", yomi: "", nickname: "", grade: "未設定", 
+    totalDays: 0, totalTime: 0, lastDate: "-", monthlyDays: 0, monthlyTime: 0 
+  };
 
-  for (let i = 1; i < logs.length; i++) {
-    if (String(logs[i][0]).trim() === targetIdm) {
-      let logDateStr = formatDate(logs[i][2]);
-      let timeVal = parseFloat(logs[i][5]) || 0;
-
-      if (logDateStr !== "-" && timeVal > 0) {
-        let logDate = new Date(logs[i][2]);
-        if (!isNaN(logDate.getTime()) && (logDate.getMonth() + 1) === currentMonth) {
-          monthlyDaysSet.add(logDateStr); 
-          monthlyTime += timeVal; 
-        }
+  let userSheet = getUserSheet(app);
+  if (userSheet) {
+    let users = userSheet.getDataRange().getValues();
+    for (let i = 1; i < users.length; i++) {
+      if (String(users[i][0]).trim() === idm) {
+        result.found = true;
+        result.name = String(users[i][1] || "");
+        result.grade = String(users[i][2] || "未設定").trim() || "未設定";
+        result.yomi = String(users[i][3] || "").trim();
+        result.nickname = String(users[i][5] || "").trim(); // F列
+        break; 
       }
     }
   }
 
-  let stats = statsSheet.getDataRange().getValues();
-  for (let i = 1; i < stats.length; i++) {
-    if (String(stats[i][0]).trim() === targetIdm) {
-      let rowNum = i + 1;
-      
-      let currentTotalTime = parseFloat(stats[i][3]) || 0;
-      let newTotalTime = currentTotalTime + durationMin;
-      
-      let currentTotalDays = parseInt(stats[i][2]) || 0;
-      let lastDateInStats = String(stats[i][4]);
-      let newTotalDays = (lastDateInStats !== dateStr && durationMin > 0) ? currentTotalDays + 1 : currentTotalDays;
+  let statsSheet = getStatsSheet(app);
+  if (statsSheet) {
+    let stats = statsSheet.getDataRange().getValues();
+    
+    let nowMonth = new Date().getMonth() + 1;
+    let offset = nowMonth >= 4 ? nowMonth - 4 : nowMonth + 8;
+    let daysColIndex = 5 + offset * 2; // 日数の列
+    let timeColIndex = 6 + offset * 2; // 時間の列
 
-      let offset = currentMonth >= 4 ? currentMonth - 4 : currentMonth + 8;
-      let daysCol = 6 + offset * 2;
-      let timeCol = 7 + offset * 2;
-
-      statsSheet.getRange(rowNum, 3).setValue(newTotalDays);
-      statsSheet.getRange(rowNum, 4).setValue(Math.round(newTotalTime * 10) / 10);
-      statsSheet.getRange(rowNum, 5).setValue(dateStr);
-      statsSheet.getRange(rowNum, daysCol).setValue(monthlyDaysSet.size);
-      statsSheet.getRange(rowNum, timeCol).setValue(Math.round(monthlyTime * 10) / 10);
-      break;
+    for (let i = 1; i < stats.length; i++) {
+      if (String(stats[i][0]).trim() === idm) {
+        result.found = true;
+        result.totalDays = stats[i][2] || 0;
+        result.totalTime = stats[i][3] || 0;
+        result.lastDate = formatDate(stats[i][4]);
+        
+        result.monthlyDays = stats[i][daysColIndex] || 0;
+        result.monthlyTime = stats[i][timeColIndex] || 0;
+        break; 
+      }
     }
   }
+
+  return responseJSON(result);
 }
 
-// =========================================
-// 年度シート＆過去シートから完全同期（再計算）
-// =========================================
+
+//サブの処理**************************************************
+
+//年度シートの作成・取得
+function getYearlySheet(app) {
+  let now = new Date();
+  let year = now.getFullYear();
+  let month = now.getMonth() + 1; 
+  if (month <= 3) year -= 1;
+  
+  let sheetName = year + "年度";
+  let sheet = app.getSheetByName(sheetName);
+  if (!sheet) {
+    sheet = app.insertSheet(sheetName);
+    sheet.appendRow(['IDm', '名前', '日付', '入室時刻', '退出時刻', '滞在時間(分)']);
+  }
+  return sheet;
+}
+//統計シートの作成・取得
+function getStatsSheet(app) {
+  let sheet = app.getSheetByName(STATS_SHEET_NAME);
+  if (!sheet) {
+    sheet = app.insertSheet(STATS_SHEET_NAME);
+    sheet.appendRow([
+      'IDm', '名前', '累計入室日数', '累計時間(分)', '最終入室日',
+      '4月日数', '4月時間', '5月日数', '5月時間', '6月日数', '6月時間',
+      '7月日数', '7月時間', '8月日数', '8月時間', '9月日数', '9月時間',
+      '10月日数', '10月時間', '11月日数', '11月時間', '12月日数', '12月時間',
+      '1月日数', '1月時間', '2月日数', '2月時間', '3月日数', '3月時間'
+    ]);
+  }
+  return sheet;
+}
+//名簿シートの作成・取得
+function getUserSheet(app) {
+  let sheet = app.getSheetByName(USER_SHEET_NAME);
+  if (!sheet) {
+    sheet = app.insertSheet(USER_SHEET_NAME);
+    sheet.appendRow(['IDm', '名前', '学年', 'ふりがな', '生徒用URL', 'ニックネーム']);
+  }
+  return sheet;
+}
+
+//日付データの整形
+function formatDate(date) {
+  if (!date) return "-";
+  try { return Utilities.formatDate(new Date(date), 'Asia/Tokyo', 'yyyy-MM-dd'); } catch (e) { return date; }
+}
+//時間データの整形
+function formatTime(timeVal) {
+  if (!timeVal) return "";
+  if (timeVal instanceof Date) return Utilities.formatDate(timeVal, 'Asia/Tokyo', 'HH:mm:ss');
+  return String(timeVal).split('.')[0]; 
+}
+//JSON形式への整形
+function responseJSON(data) {
+  let output = ContentService.createTextOutput(JSON.stringify(data));
+  output.setMimeType(ContentService.MimeType.JSON);
+  return output;
+}
+
+//統計データ全員分同期
 function syncStatsData(app) {
   let statsSheet = getStatsSheet(app);
   let userSheet = getUserSheet(app);
@@ -671,29 +534,79 @@ function syncStatsData(app) {
     statsSheet.getRange(2, 1, outputRows.length, outputRows[0].length).setValues(outputRows);
   }
 }
+//統計データ一人分同期
+function updateSingleUserStats(app, targetIdm, durationMin, dateStr) {
+  let now = new Date();
+  let currentMonth = now.getMonth() + 1;
+  let currentYear = currentMonth <= 3 ? now.getFullYear() - 1 : now.getFullYear();
 
-// スプレッドシートを手作業で編集したときに自動で統計を同期する
-function onEdit(e) {
-  if (!e || !e.source) return;
-  let sheetName = e.source.getActiveSheet().getName();
-  if (/^\d{4}年度$/.test(sheetName)) {
-    let app = SpreadsheetApp.getActiveSpreadsheet();
-    syncStatsData(app);
+  let yearlySheet = app.getSheetByName(currentYear + "年度");
+  let statsSheet = getStatsSheet(app);
+  if (!yearlySheet || !statsSheet) return;
+
+  let logs = yearlySheet.getDataRange().getValues();
+  let monthlyDaysSet = new Set();
+  let monthlyTime = 0;
+
+  for (let i = 1; i < logs.length; i++) {
+    if (String(logs[i][0]).trim() === targetIdm) {
+      let logDateStr = formatDate(logs[i][2]);
+      let timeVal = parseFloat(logs[i][5]) || 0;
+
+      if (logDateStr !== "-" && timeVal > 0) {
+        let logDate = new Date(logs[i][2]);
+        if (!isNaN(logDate.getTime()) && (logDate.getMonth() + 1) === currentMonth) {
+          monthlyDaysSet.add(logDateStr); 
+          monthlyTime += timeVal; 
+        }
+      }
+    }
+  }
+
+  let stats = statsSheet.getDataRange().getValues();
+  for (let i = 1; i < stats.length; i++) {
+    if (String(stats[i][0]).trim() === targetIdm) {
+      let rowNum = i + 1;
+      
+      let currentTotalTime = parseFloat(stats[i][3]) || 0;
+      let newTotalTime = currentTotalTime + durationMin;
+      
+      let currentTotalDays = parseInt(stats[i][2]) || 0;
+      let lastDateInStats = String(stats[i][4]);
+      let newTotalDays = (lastDateInStats !== dateStr && durationMin > 0) ? currentTotalDays + 1 : currentTotalDays;
+
+      let offset = currentMonth >= 4 ? currentMonth - 4 : currentMonth + 8;
+      let daysCol = 6 + offset * 2;
+      let timeCol = 7 + offset * 2;
+
+      statsSheet.getRange(rowNum, 3).setValue(newTotalDays);
+      statsSheet.getRange(rowNum, 4).setValue(Math.round(newTotalTime * 10) / 10);
+      statsSheet.getRange(rowNum, 5).setValue(dateStr);
+      statsSheet.getRange(rowNum, daysCol).setValue(monthlyDaysSet.size);
+      statsSheet.getRange(rowNum, timeCol).setValue(Math.round(monthlyTime * 10) / 10);
+      break;
+    }
   }
 }
 
-// =========================================
-// 【自動実行タイマー用】毎晩の統計データ完全同期（全員分）
-// =========================================
+
+//自動実行関数**************************************************
+
+//毎晩：一括退室処理
+function autoForceExitAll() {
+  let app = SpreadsheetApp.openById(SHEET_ID);
+  processForceExitAll(app, "22:00:00");
+  console.log("毎晩の自動一括退室（22時で記録）が完了しました。");
+}
+
+//毎晩：統計データ全員分同期
 function dailyFullStatsSync() {
   let app = SpreadsheetApp.openById(SHEET_ID);
   syncStatsData(app); 
   console.log("毎日の統計データ完全同期が完了しました。");
 }
 
-// =========================================
-// 【自動実行タイマー用】4月1日の学年自動繰り上げ ＆ 統計データの年度更新処理
-// =========================================
+//4月1日：学年繰り上げ ＆ 統計データの年度更新処理
 function promoteGradesIfNeeded() {
   let now = new Date();
   
@@ -753,13 +666,4 @@ function promoteGradesIfNeeded() {
   } else {
     console.log("4月ではないため、年度の更新はスキップされました。");
   }
-}
-
-// =========================================
-// 【自動実行タイマー用】毎晩の一括退室処理
-// =========================================
-function autoForceExitAll() {
-  let app = SpreadsheetApp.openById(SHEET_ID);
-  processForceExitAll(app, "22:00:00");
-  console.log("毎晩の自動一括退室（22時で記録）が完了しました。");
 }
