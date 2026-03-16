@@ -9,9 +9,6 @@ from gspread.exceptions import APIError
 import config
 import ndef
 
-# ==========================================
-# 設定エリア
-# ==========================================
 SPREADSHEET_KEY = config.SPREADSHEET_KEY
 JSON_FILE = config.JSON_FILE
 STUDENT_URL_BASE = config.STUDENT_URL_BASE
@@ -19,14 +16,13 @@ USER_SHEET_NAME = '名簿'
 STATS_SHEET_NAME = '統計'
 MONITOR_SHEET_NAME = 'モニター'
 
-# ★メモリキャッシュを完全に廃止しました（毎回シートを確認します）
+#サブの処理**************************************************
 
-# ==========================================
-# 0. 便利関数
-# ==========================================
+#idの整形
 def normalize_id(val):
     return str(val).strip()
 
+#API制限対策の再試行
 def safe_api_call(func, *args, **kwargs):
     max_retries = 3
     for i in range(max_retries):
@@ -42,15 +38,16 @@ def safe_api_call(func, *args, **kwargs):
     print("❌ API接続に失敗しました。処理をスキップします。")
     return None
 
-# ==========================================
-# 1. 基本機能
-# ==========================================
+#シート操作・外部連携関数****************************************
+
+#スプレッドシートを開く
 def get_workbook():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_name(JSON_FILE, scope)
     client = gspread.authorize(creds)
     return client.open_by_key(SPREADSHEET_KEY)
 
+#指定したシートを安全に取得する（なければ作成）
 def get_sheet_safe(workbook, sheet_name, header_row):
     def _get():
         try:
@@ -61,10 +58,10 @@ def get_sheet_safe(workbook, sheet_name, header_row):
             return sheet
     return safe_api_call(_get)
 
+#年度シートを取得
 def get_yearly_sheet(workbook):
     now = datetime.now()
     
-    # 1月〜3月の場合は「前年度」になるよう計算
     if now.month <= 3:
         year = now.year - 1
     else:
@@ -73,30 +70,25 @@ def get_yearly_sheet(workbook):
     sheet_name = f"{year}年度"
     return get_sheet_safe(workbook, sheet_name, ['IDm', '名前', '日付', '入室時刻', '退出時刻', '滞在時間(分)'])
 
+#タグにURLの書き込み
 def write_ndef(connection, url):
     try:
-        # 1. NDEFメッセージ（URL）を作成
         record = ndef.UriRecord(url)
         message_bytes = b"".join(ndef.message_encoder([record]))
         message = [int(b) for b in message_bytes]
         
-        # 2. TLV形式にラップ (0x03=NDEF, 長さ, ペイロード, 0xFE=終端)
         tlv = [0x03, len(message)] + message + [0xFE]
         
-        # 4バイト単位にパディング
         while len(tlv) % 4 != 0:
             tlv.append(0x00)
         
         print(f" 🔗 タグへURL書き込み中...")
-        # 3. データの書き込み (Page 4以降)
         for i in range(0, len(tlv), 4):
             page = 4 + (i // 4)
             data = tlv[i:i+4]
-            # APDU送信: [FF, D6, 00, ページ番号, 04, データ(4バイト)]
             cmd = [0xFF, 0xD6, 0x00, page, 0x04] + data
             _, sw1, sw2 = connection.transmit(cmd)
             
-            # ステータスコード 90 00 以外は失敗
             if sw1 != 0x90 or sw2 != 0x00:
                 print(f" ❌ ページ {page} の書き込みに失敗 (Status: {hex(sw1)} {hex(sw2)})")
                 return False
@@ -105,9 +97,7 @@ def write_ndef(connection, url):
         print(f" ⚠️ 書き込みエラー詳細: {e}")
         return False
 
-# ==========================================
-# 2. モニター用シート更新
-# ==========================================
+#モニターシートの更新
 def update_monitor_sheet(workbook, name, status, date_str, time_str):
     try:
         sheet = get_sheet_safe(workbook, MONITOR_SHEET_NAME, ['名前', 'ステータス', '日付', '時刻'])
@@ -116,12 +106,10 @@ def update_monitor_sheet(workbook, name, status, date_str, time_str):
     except Exception:
         pass
 
+#メインの処理**************************************************
 
-# ==========================================
-# 3. 統計データの更新（月ごとの記録対応版）
-# ==========================================
+#統計シート（累計日数・時間・月別）の更新
 def update_statistics(workbook, idm, name, duration_min, date_str):
-    # 4月始まりの固定ヘッダー（全29列）
     stats_header = [
         'IDm', '名前', '累計入室日数', '累計時間(分)', '最終入室日',
         '4月日数', '4月時間', '5月日数', '5月時間', '6月日数', '6月時間',
@@ -153,7 +141,6 @@ def update_statistics(workbook, idm, name, duration_min, date_str):
             if len(row) > 4: last_visit_date_str = str(row[4])
             break
 
-    # 今月の列の位置を計算 (4月=6列目, 5月=8列目...)
     try:
         visit_date = datetime.strptime(date_str, '%Y-%m-%d')
         m = visit_date.month
@@ -180,7 +167,6 @@ def update_statistics(workbook, idm, name, duration_min, date_str):
                 current_monthly_time = float(row[time_col - 1])
         except: current_monthly_time = 0.0
 
-        # 同じ日に複数回入室した場合は日数を増やさない
         if last_visit_date_str != date_str:
             new_days = current_days + 1
             new_monthly_days = current_monthly_days + 1
@@ -195,23 +181,20 @@ def update_statistics(workbook, idm, name, duration_min, date_str):
         safe_api_call(stats_sheet.update_cell, target_row_index, 3, new_days)
         safe_api_call(stats_sheet.update_cell, target_row_index, 4, round(new_total_time, 1))
         safe_api_call(stats_sheet.update_cell, target_row_index, 5, date_str)
-        # 月ごとのデータを更新
         safe_api_call(stats_sheet.update_cell, target_row_index, days_col, new_monthly_days)
         safe_api_call(stats_sheet.update_cell, target_row_index, time_col, round(new_monthly_time, 1))
 
         print(f"   📈 統計更新: 計{new_days}日 ({m}月: {new_monthly_days}日 / {round(new_monthly_time, 1)}分)")
     else:
         new_row = [idm, name, 1, round(duration_min, 1), date_str]
-        new_row.extend([""] * 24) # 後ろの列を空欄で埋める
+        new_row.extend([""] * 24)
         new_row[days_col - 1] = 1
         new_row[time_col - 1] = round(duration_min, 1)
 
         safe_api_call(stats_sheet.append_row, new_row)
         print(f"   📈 統計新規作成: {name}")
 
-# ==========================================
-# 4. 入退室処理（毎回確認版）
-# ==========================================
+#タグ読み取りのメイン判定処理
 def handle_tap(idm, workbook, connection):
     safe_idm = normalize_id(idm)
     user_name = "未登録(新規)"
@@ -228,24 +211,19 @@ def handle_tap(idm, workbook, connection):
                     is_new_user = False
                     break
 
-    # --- 初回登録 & URL書き込みフロー ---
     if is_new_user:
         print(f"🆕 初回登録検出: {safe_idm}")
         
-        # ★重要修正：API待ちで切れた接続を「再接続」して叩き起こす
         try:
             connection.connect() 
         except:
             pass 
 
-        # 1. 物理タグへのURL書き込みを優先実行
         if write_ndef(connection, personal_url):
             print(" ✅ タグへのURL書き込み成功")
             
-            # 2. 書き込み成功時のみ、スプレッドシート名簿へ登録
             safe_api_call(user_sheet.append_row, [safe_idm, '', '', '', personal_url])
             
-            # 3. モニターへの通知
             now = datetime.now()
             date_str, time_str = now.strftime('%Y-%m-%d'), now.strftime('%H:%M:%S')
             status_msg = f"登録完了|{safe_idm}|{personal_url}"
@@ -259,7 +237,6 @@ def handle_tap(idm, workbook, connection):
             winsound.Beep(500, 500)
         return
     
-    # --- 通常の入退室記録 ---
     sheet = get_yearly_sheet(workbook)
     now = datetime.now()
     date_str, time_str = now.strftime('%Y-%m-%d'), now.strftime('%H:%M:%S')
@@ -283,7 +260,6 @@ def handle_tap(idm, workbook, connection):
         safe_api_call(sheet.update_cell, target_row_index, 5, time_str)
         safe_api_call(sheet.update_cell, target_row_index, 6, duration_min)
         
-        # 統計の更新
         update_statistics(workbook, safe_idm, user_name, duration_min, date_str)
         
         print(f"👋 【退出】 {user_name}")
@@ -295,6 +271,7 @@ def handle_tap(idm, workbook, connection):
         update_monitor_sheet(workbook, user_name, "入室", date_str, time_str)
         winsound.Beep(2000, 200)
 
+#メイン関数**************************************************
 def main():
     print("========================================")
     print("   RisshiLog 統合管理システム (Native PCSC)")
@@ -320,21 +297,17 @@ def main():
     while True:
         try:
             connection.connect()
-            # IDm取得
             data, sw1, sw2 = connection.transmit([0xFF, 0xCA, 0x00, 0x00, 0x00])
             raw_idm = toHexString(data).replace(" ", "")
             
             if raw_idm != holding_card_id:
-                # カードを検知したら処理開始
                 handle_tap(raw_idm, workbook, connection)
                 holding_card_id = raw_idm
             
-            # 処理が終わったら一度切断してカード離脱を待つ
             connection.disconnect()
             time.sleep(1.0)
             
         except Exception:
-            # カードが離れたらIDをリセット
             holding_card_id = None
             time.sleep(0.5)
 
