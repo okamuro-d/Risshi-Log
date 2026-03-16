@@ -16,6 +16,9 @@ USER_SHEET_NAME = '名簿'
 STATS_SHEET_NAME = '統計'
 MONITOR_SHEET_NAME = 'モニター'
 
+last_scan_times = {}
+COOLDOWN_SECONDS = 10
+
 #サブの処理**************************************************
 
 #idの整形
@@ -197,6 +200,13 @@ def update_statistics(workbook, idm, name, duration_min, date_str):
 #タグ読み取りのメイン判定処理
 def handle_tap(idm, workbook, connection):
     safe_idm = normalize_id(idm)
+    current_time = time.time()
+    if safe_idm in last_scan_times:
+        if current_time - last_scan_times[safe_idm] < COOLDOWN_SECONDS:
+            return 
+    
+    last_scan_times[safe_idm] = current_time
+
     user_name = "未登録(新規)"
     personal_url = STUDENT_URL_BASE + safe_idm
     is_new_user = True
