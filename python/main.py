@@ -203,7 +203,8 @@ def handle_tap(idm, workbook, connection):
     current_time = time.time()
     if safe_idm in last_scan_times:
         if current_time - last_scan_times[safe_idm] < COOLDOWN_SECONDS:
-            return 
+            return
+    winsound.Beep(2000, 200) 
     
     last_scan_times[safe_idm] = current_time
 
@@ -274,12 +275,11 @@ def handle_tap(idm, workbook, connection):
         
         print(f"👋 【退出】 {user_name}")
         update_monitor_sheet(workbook, user_name, "退出", date_str, time_str)
-        winsound.Beep(1500, 200)
+
     else:
         safe_api_call(sheet.append_row, [safe_idm, user_name, date_str, time_str, "", ""])
         print(f"🔔 【入室】 {user_name}")
         update_monitor_sheet(workbook, user_name, "入室", date_str, time_str)
-        winsound.Beep(2000, 200)
 
 #メイン関数**************************************************
 def main():
