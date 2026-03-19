@@ -127,15 +127,26 @@
 
   <script>
     let isEditing = false; 
-    let allUsersData = []; 
+    let allUsersData = [];
+    let manualUpdateLock = {}; 
 
     function fetchStatus() {
       if (isEditing) return; 
       fetch(GAS_URL + "?mode=get_all_status&t=" + new Date().getTime())
         .then(res => res.json())
         .then(users => {
-          if (isEditing) return; 
-          allUsersData = users; 
+          if (isEditing) return;
+          const now = Date.now();
+          allUsersData = users.map(incomingUser => {
+            const lockTime = manualUpdateLock[incomingUser.idm];
+            if (lockTime && (now - lockTime < 10000)) {
+              const localUser = allUsersData.find(u => u.idm === incomingUser.idm);
+              if (localUser) {
+                return { ...incomingUser, status: localUser.status, time: localUser.time };
+              }
+            }
+            return incomingUser;
+          });
           renderUsers();        
         });
     }
@@ -284,8 +295,30 @@
 
     function toggle(idm, btn) {
       if(!confirm("変更しますか？")) return;
+
+      const userIndex = allUsersData.findIndex(u => u.idm === idm);
+      if (userIndex !== -1) {
+        const user = allUsersData[userIndex];
+        const now = new Date();
+        const timeStr = now.getHours() + ":" + ("0" + now.getMinutes()).slice(-2) + ":" + ("0" + now.getSeconds()).slice(-2);
+        
+        user.status = (user.status === 'in') ? 'out' : 'in';
+        user.time = (user.status === 'in') ? timeStr : '退出済み';
+        
+        manualUpdateLock[idm] = Date.now();
+        renderUsers();
+      }
+
       btn.disabled = true;
-      fetch(GAS_URL + "?mode=toggle_status&idm=" + idm).then(() => fetchStatus());
+      fetch(GAS_URL + "?mode=toggle_status&idm=" + idm)
+        .then(() => {
+          // 通信成功。5秒ごとの自動更新に任せても良いが、念のため最新を取得
+          fetchStatus();
+        })
+        .catch(() => {
+          alert("通信エラーが発生しました。");
+          fetchStatus(); // エラー時は正しい状態に戻す
+        });
     }
 
     function copyUrl(url, btn) {
@@ -322,7 +355,7 @@
     }
 
     fetchStatus();
-    setInterval(fetchStatus, 5000); // 監視間隔を5秒に調整
+    setInterval(fetchStatus, 5000);
   </script>
 </body>
 </html>
