@@ -29,20 +29,27 @@ function doGet(e) {
 
 //メインの処理**************************************************
 
-//最新のログを取得(モニターシートの一番下を返す)
+//最新のログを取得
 function getLatestLog(app) {
   let sheet = app.getSheetByName(MONITOR_SHEET_NAME);
-  if (!sheet || sheet.getLastRow() < 2) return responseJSON({ empty: true });
-  let rowData = sheet.getRange(sheet.getLastRow(), 1, 1, 4).getValues()[0];
-  return responseJSON({ name: rowData[0], status: rowData[1], date: formatDate(rowData[2]), time: formatTime(rowData[3]) });
+  if (!sheet) return responseJSON({ empty: true });
+
+  let range = sheet.getRange(2, 1, 1, 4);
+  let values = range.getValues()[0];
+
+  if (!values[0] || values[0] === "") return responseJSON({ empty: true });
+  
+  let result = { name: values[0], status: values[1], date: formatDate(values[2]), time: formatTime(values[3])};
+  range.clearContent();
+  return responseJSON(result);
 }
 
 //ステータスの取得(退室が空欄の人を入室と判断しリストを返す)
 function getAllStatus(app) {
   let userSheet = getUserSheet(app);
-  let monthlySheet = getYearlySheet(app);
+  let yearlySheet = getYearlySheet(app);
   
-  if (!userSheet || !monthlySheet) return responseJSON([]);
+  if (!userSheet || !yearlySheet) return responseJSON([]);
 
   let users = userSheet.getDataRange().getValues();
   let statusMap = {};
@@ -56,7 +63,7 @@ function getAllStatus(app) {
     if (idm) statusMap[idm] = { idm: idm, name: users[i][1], grade: grade, yomi: yomi, url: url, status: 'out', time: '-' };
   }
 
-  let logs = monthlySheet.getDataRange().getValues();
+  let logs = yearlySheet.getDataRange().getValues();
   for (let i = logs.length - 1; i >= 1; i--) {
     let idm = String(logs[i][0]).trim();
     if (statusMap[idm]) {
@@ -83,7 +90,7 @@ function getAllStatus(app) {
 function toggleStatus(app, targetIdm) {
   targetIdm = String(targetIdm).trim();
   let userSheet = getUserSheet(app);
-  let monthlySheet = getYearlySheet(app);
+  let yearlySheet = getYearlySheet(app);
   let monitorSheet = app.getSheetByName(MONITOR_SHEET_NAME);
   
   let users = userSheet.getDataRange().getValues();
@@ -103,7 +110,7 @@ function toggleStatus(app, targetIdm) {
     userSheet.appendRow([targetIdm, "", "", "", personalUrl, ""]);
   }
 
-  let logs = monthlySheet.getDataRange().getValues();
+  let logs = yearlySheet.getDataRange().getValues();
   let targetRowIndex = -1;
   let entryTime = null;
 
@@ -129,14 +136,14 @@ function toggleStatus(app, targetIdm) {
       durationMin = (now.getTime() - entryTime.getTime()) / (1000 * 60);
     }
     durationMin = Math.round(durationMin * 10) / 10;
-    monthlySheet.getRange(targetRowIndex, 5).setValue(timeStr);
-    monthlySheet.getRange(targetRowIndex, 6).setValue(durationMin);
-    if (monitorSheet) monitorSheet.appendRow([userName, "退出", dateStr, timeStr]);
+    yearlySheet.getRange(targetRowIndex, 5).setValue(timeStr);
+    yearlySheet.getRange(targetRowIndex, 6).setValue(durationMin);
+    if (monitorSheet) monitorSheet.getRange(2, 1, 1, 4).setValues([[userName, "退出", dateStr, timeStr]]);
     updateSingleUserStats(app, targetIdm, durationMin, dateStr); 
     return responseJSON({ success: true, action: 'out', name: userName });
   } else {
-    monthlySheet.appendRow([targetIdm, userName, dateStr, timeStr, "", ""]);
-    if (monitorSheet) monitorSheet.appendRow([userName, "入室", dateStr, timeStr]);
+    yearlySheet.appendRow([targetIdm, userName, dateStr, timeStr, "", ""]);
+    if (monitorSheet) monitorSheet.getRange(2, 1, 1, 4).setValues([[userName, "入室", dateStr, timeStr]]);
     updateSingleUserStats(app, targetIdm, 0, dateStr); // 入室時も統計更新を通す
     return responseJSON({ success: true, action: 'in', name: userName });
   }
@@ -144,9 +151,9 @@ function toggleStatus(app, targetIdm) {
 
 //一括退室処理
 function processForceExitAll(app, forcedTimeStr = null) {
-  let monthlySheet = getYearlySheet(app);
+  let yearlySheet = getYearlySheet(app);
   let monitorSheet = app.getSheetByName(MONITOR_SHEET_NAME);
-  let logs = monthlySheet.getDataRange().getValues();
+  let logs = yearlySheet.getDataRange().getValues();
   
   let now = new Date();
   let dateStr = Utilities.formatDate(now, 'Asia/Tokyo', 'yyyy-MM-dd');
@@ -172,11 +179,11 @@ function processForceExitAll(app, forcedTimeStr = null) {
       if (durationMin < 0) durationMin = 0;
       durationMin = Math.round(durationMin * 10) / 10;
       
-      monthlySheet.getRange(targetRowIndex, 5).setValue(timeStr);
-      monthlySheet.getRange(targetRowIndex, 6).setValue(durationMin);
+      yearlySheet.getRange(targetRowIndex, 5).setValue(timeStr);
+      yearlySheet.getRange(targetRowIndex, 6).setValue(durationMin);
       
       let remark = forcedTimeStr ? "退出(自動22時)" : "退出(一括)";
-      if (monitorSheet) monitorSheet.appendRow([userName, remark, dateStr, timeStr]);
+      if (monitorSheet) monitorSheet.getRange(2, 1, 1, 4).setValues([[userName, remark, dateStr, timeStr]]);
       count++;
     }
   }

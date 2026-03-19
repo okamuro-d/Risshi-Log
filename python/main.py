@@ -105,7 +105,7 @@ def update_monitor_sheet(workbook, name, status, date_str, time_str):
     try:
         sheet = get_sheet_safe(workbook, MONITOR_SHEET_NAME, ['名前', 'ステータス', '日付', '時刻'])
         if sheet:
-            safe_api_call(sheet.append_row, [name, status, date_str, time_str])
+            safe_api_call(sheet.update, 'A2:D2', [[name, status, date_str, time_str]])
     except Exception:
         pass
 
